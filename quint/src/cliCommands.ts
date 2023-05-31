@@ -34,7 +34,7 @@ import { DocumentationEntry, produceDocs, toMarkdown } from './docs'
 import { QuintAnalyzer } from './quintAnalyzer'
 import { QuintError, quintErrorToString } from './quintError'
 import { TestOptions, TestResult, compileAndTest } from './runtime/testing'
-import { newIdGenerator } from './idGenerator'
+import { IdGenerator, newIdGenerator } from './idGenerator'
 import { SimulatorOptions, compileAndRun } from './simulation'
 import { toItf } from './itf'
 import { printExecutionFrameRec, printTrace, terminalWidth } from './graphics'
@@ -117,6 +117,7 @@ interface ParsedStage extends LoadedStage {
   modules: QuintModule[]
   sourceMap: Map<bigint, Loc>
   table: LookupTable
+  idGen: IdGenerator
 }
 
 interface TypecheckedStage extends ParsedStage {
@@ -194,12 +195,12 @@ export async function load(args: any): Promise<CLIProcedure<LoadedStage>> {
 export async function parse(loaded: LoadedStage): Promise<CLIProcedure<ParsedStage>> {
   const { args, sourceCode, path } = loaded
   const parsing = { ...loaded, stage: 'parsing' as stage }
-  const idgen = newIdGenerator()
-  return parsePhase1fromText(idgen, sourceCode, path)
+  const idGen = newIdGenerator()
+  return parsePhase1fromText(idGen, sourceCode, path)
     .chain(phase1Data => {
       const resolver = fileSourceResolver()
       const mainPath = resolver.lookupPath(dirname(path), basename(path))
-      return parsePhase2sourceResolution(idgen, resolver, mainPath, phase1Data)
+      return parsePhase2sourceResolution(idGen, resolver, mainPath, phase1Data)
     })
     .mapLeft(newErrs => {
       const errors = parsing.errors ? parsing.errors.concat(newErrs) : newErrs
@@ -215,7 +216,7 @@ export async function parse(loaded: LoadedStage): Promise<CLIProcedure<ParsedSta
         return { msg: 'parsing failed', stage: { ...parsing, errors } }
       })
     })
-    .map(phase2Data => ({ ...parsing, ...phase2Data }))
+    .map(phase2Data => ({ ...parsing, ...phase2Data, idGen }))
 }
 
 export function mkErrorMessage(sourceMap: Map<bigint, Loc>): (_: [bigint, QuintError]) => ErrorMessage {
@@ -330,7 +331,13 @@ export async function runTests(prev: TypecheckedStage): Promise<CLIProcedure<Tes
       },
     }
     const analysisOutput = { types: testing.types, effects: testing.effects, modes: testing.modes }
-    const testOut = compileAndTest(testing.modules, main, testing.sourceMap, testing.table, analysisOutput, options)
+    const compilationState = {
+      modules: testing.modules,
+      sourceMap: testing.sourceMap,
+      analysisOutput,
+      idGen: testing.idGen
+    }
+    const testOut = compileAndTest(compilationState, main, testing.table, options)
     if (testOut.isLeft()) {
       return cliErr('Tests failed', { ...testing, errors: testOut.value })
     } else if (testOut.isRight()) {

@@ -22,11 +22,12 @@ import { QuintDef, QuintEx, QuintModule } from '../quintIr'
 import { CompilerVisitor } from './impl/compilerImpl'
 import { walkDefinition } from '../IRVisitor'
 import { LookupTable } from '../lookupTable'
-import { AnalysisOutput, QuintAnalyzer, analyzeInc } from '../quintAnalyzer'
+import { AnalysisOutput, analyzeInc, analyzeModules } from '../quintAnalyzer'
 import { mkErrorMessage } from '../cliCommands'
-import { IdGenerator } from '../idGenerator'
+import { IdGenerator, newIdGenerator } from '../idGenerator'
 import { SourceLookupPath } from '../sourceResolver'
 import { Rng } from '../rng'
+import { flattenModules } from '../flattening'
 
 /**
  * The name of the shadow variable that stores the last found trace.
@@ -55,19 +56,27 @@ export interface CompilationContext {
   compileErrors: ErrorMessage[]
   // messages that get populated as the compiled code is executed
   getRuntimeErrors: () => ErrorMessage[]
-  // source mapping
-  sourceMap: Map<bigint, Loc>,
-  flattenedModules?: QuintModule[],
-  analysisOutput?: AnalysisOutput,
+  compilationState: CompilationState
 }
 
 export interface CompilationState {
-  // generator of unique identifiers
   idGen: IdGenerator
-  // Quint analyzer (for incremental static analysis)
   modules: QuintModule[]
   sourceMap: Map<bigint, Loc>
-  analysisOutput?: AnalysisOutput
+  analysisOutput: AnalysisOutput
+}
+
+export function newCompilationState(): CompilationState {
+  return {
+    idGen: newIdGenerator(),
+    modules: [],
+    sourceMap: new Map(),
+    analysisOutput: {
+      types: new Map(),
+      effects: new Map(),
+      modes: new Map(),
+    }
+  }
 }
 
 export function errorContextFromMessage(errors: ErrorMessage[]): CompilationContext {
@@ -80,7 +89,7 @@ export function errorContextFromMessage(errors: ErrorMessage[]): CompilationCont
     analysisErrors: [],
     compileErrors: [],
     getRuntimeErrors: () => [],
-    sourceMap: new Map(),
+    compilationState: newCompilationState(),
   }
 }
 
@@ -141,17 +150,14 @@ export function contextNameLookup(
  * @returns the compilation context
  */
 export function compile(
-  modules: QuintModule[],
-  sourceMap: Map<bigint, Loc>,
+  compilationState: CompilationState,
   lookupTable: LookupTable,
-  analysisOutput: AnalysisOutput,
   mainName: string,
   execListener: ExecutionListener,
   rand: (bound: bigint) => bigint,
 ): CompilationContext {
+  const { modules, sourceMap, analysisOutput } = compilationState
   const { types } = analysisOutput
-  console.log(types.size)
-
   const main = modules.find(m => m.name === mainName)
 
   const visitor = new CompilerVisitor(lookupTable, types, rand, execListener)
@@ -179,11 +185,10 @@ export function compile(
     getRuntimeErrors: () => {
       return visitor.getRuntimeErrors().splice(0).map(fromIrErrorMessage(sourceMap))
     },
-    sourceMap: sourceMap,
-    // The analysis output will be used in subsequent compilations.
+    // The compilation state will be used in subsequent compilations.
     // It might seem like the object was not changed by this function, but it was, since
     // flattening updates the internal maps.
-    analysisOutput: analysisOutput,
+    compilationState
   }
 }
 
@@ -195,9 +200,10 @@ export function compileExpr(state: CompilationState, rng: Rng, recorder: any, ex
   // ensuring the original object is not modified
   const modules = [...state.modules]
   const lastModule = modules.pop()
-  if (lastModule) {
-    modules.push({ ...lastModule, defs: [...lastModule.defs, def] })
+  if (!lastModule) {
+    throw new Error('No modules in state')
   }
+  modules.push({ ...lastModule, defs: [...lastModule.defs, def] })
 
   // We need to resolve names for this new definition. Incremental name
   // resolution is not our focus now, so just resolve everything again.
@@ -220,7 +226,13 @@ export function compileExpr(state: CompilationState, rng: Rng, recorder: any, ex
     throw new Error(`Error on analysis: ${analysisErrors.map(([_, e]) => e.message)}`)
   }
 
-  return compile(modules, state.sourceMap, lookupTable, analysisOutput, '__repl__', recorder, rng.next)
+  const temporaryState = {
+    ...state,
+    analysisOutput,
+    modules
+  }
+
+  return compile(temporaryState, lookupTable, lastModule?.name, recorder, rng.next)
 }
 
 /**
@@ -242,7 +254,6 @@ export function compileFromCode(
   mainPath: SourceLookupPath,
   execListener: ExecutionListener,
   rand: (bound: bigint) => bigint,
-  quintAnalyzer?: QuintAnalyzer,
 ): CompilationContext {
   // parse the module text
   return (
@@ -253,13 +264,20 @@ export function compileFromCode(
         parseData => {
           const { modules, table, sourceMap } = parseData
 
-          // Provide the most recent lookup table to the analyzer
-          quintAnalyzer?.setTable(table)
-          const analyzer = quintAnalyzer ?? new QuintAnalyzer(table)
-          modules.forEach(m => analyzer.analyze(m))
-          const [analysisErrors, analysisResult] = analyzer.getResult()
+          // TODO: handle errors
+          const [analysisErrors, analysisOutput] = analyzeModules(table, modules)
 
-          const ctx = compile(modules, sourceMap, table, analysisResult, mainName, execListener, rand)
+          const { flattenedModules, flattenedTable, flattenedAnalysis } = flattenModules(
+            modules, table, idGen, sourceMap, analysisOutput
+          )
+          const compilationState = {
+            modules: flattenedModules,
+            sourceMap,
+            analysisOutput: flattenedAnalysis,
+            idGen,
+          }
+
+          const ctx = compile(compilationState, flattenedTable, mainName, execListener, rand)
           const errorLocator = mkErrorMessage(sourceMap)
           return right({
             ...ctx,
