@@ -32,7 +32,7 @@ import {
 import { defaultValueDefinitions } from './definitionsCollector'
 import { definitionToString } from './IRprinting'
 import { QuintType, Row } from './quintTypes'
-import { Loc } from './quintParserFrontend'
+import { Loc, parsePhase3importAndNameResolution } from './quintParserFrontend'
 import { compact, uniqBy } from 'lodash'
 import { AnalysisOutput } from './quintAnalyzer'
 
@@ -45,6 +45,42 @@ interface FlatteningContext {
   sourceMap: Map<bigint, Loc>
   analysisOutput: AnalysisOutput
   importedModules: Map<string, QuintModule>
+}
+
+export function flattenModules(
+  modules: QuintModule[],
+  table: LookupTable,
+  idGenerator: IdGenerator,
+  sourceMap: Map<bigint, Loc>,
+  analysisOutput: AnalysisOutput,
+): { flattenedModules: QuintModule[], flattenedTable: LookupTable, flattenedAnalysis: AnalysisOutput } {
+  const importedModules = new Map(modules.map(m => [m.name, m]))
+  return modules.reduce((acc, module) => {
+    const { flattenedModules, flattenedTable, flattenedAnalysis } = acc
+    // TODO: use copy of analysis output
+    const flattened = flatten(module, flattenedTable, importedModules, idGenerator, sourceMap, flattenedAnalysis)
+
+    importedModules.set(module.name, flattened)
+
+    // The lookup table has to be updated for every new module that is flattened
+    // Since the flattened modules have new ids for both the name expressions
+    // and their definitions, and the next iteration might depend on an updated
+    // lookup table
+    const newEntries = parsePhase3importAndNameResolution({ modules: [flattened], sourceMap })
+      .mapLeft(errors => {
+        // This should not happen, as the flattening should not introduce any
+        // errors, since parsePhase3 analysis of the original modules has already
+        // assured all names are correct.
+        throw new Error(`Error on resolving names for flattened modules: ${errors.map(e => e.explanation)}`)
+      })
+      .unwrap().table
+
+    return {
+      flattenedModules: [...flattenedModules, flattened],
+      flattenedTable: new Map([...flattenedTable.entries(), ...newEntries.entries()]),
+      flattenedAnalysis: flattenedAnalysis,
+    }
+  }, { flattenedModules: [] as QuintModule[], flattenedTable: table, flattenedAnalysis: analysisOutput })
 }
 
 /**

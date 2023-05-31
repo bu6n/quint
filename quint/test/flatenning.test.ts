@@ -60,7 +60,7 @@ describe('flatten', () => {
       ]),
       idGenerator,
       result.value.sourceMap,
-      typesMap
+      { types: typesMap, effects: new Map(), modes: new Map() }
     )
 
     it('flattens instances', () => {
