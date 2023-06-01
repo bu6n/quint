@@ -42,6 +42,7 @@ import { verbosity } from './verbosity'
 import { Rng, newRng } from './rng'
 import { fileSourceResolver } from './sourceResolver'
 import { verify } from './quintVerifier'
+import { flattenModules } from './flattening'
 
 export type stage = 'loading' | 'parsing' | 'typechecking' | 'testing' | 'running' | 'documentation'
 
@@ -331,13 +332,16 @@ export async function runTests(prev: TypecheckedStage): Promise<CLIProcedure<Tes
       },
     }
     const analysisOutput = { types: testing.types, effects: testing.effects, modes: testing.modes }
+    const { flattenedModules, flattenedTable, flattenedAnalysis } = flattenModules(
+      testing.modules, testing.table, testing.idGen, testing.sourceMap, analysisOutput
+    )
     const compilationState = {
-      modules: testing.modules,
+      modules: flattenedModules,
       sourceMap: testing.sourceMap,
-      analysisOutput,
+      analysisOutput: flattenedAnalysis,
       idGen: testing.idGen
     }
-    const testOut = compileAndTest(compilationState, main, testing.table, options)
+    const testOut = compileAndTest(compilationState, main, flattenedTable, options)
     if (testOut.isLeft()) {
       return cliErr('Tests failed', { ...testing, errors: testOut.value })
     } else if (testOut.isRight()) {

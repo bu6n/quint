@@ -258,15 +258,20 @@ export interface QuintInstance extends WithId {
   fromSource?: string
 }
 
-/**
- * Definition: constant, state variable, operator definition, assumption, instance, module.
- */
-export type QuintDef = (
+export type FlattenedDef = (
   | QuintOpDef
   | QuintConst
   | QuintVar
   | QuintAssume
   | QuintTypeDef
+) &
+  WithOptionalDoc
+
+/**
+ * Definition: constant, state variable, operator definition, assumption, instance, module.
+ */
+export type QuintDef = (
+  | FlattenedDef
   | QuintImport
   | QuintExport
   | QuintInstance
@@ -285,6 +290,18 @@ export interface QuintModule extends WithId {
   name: string
   /** The definitions in the module. */
   defs: QuintDef[]
+  /** Optional documentation for the module. */
+  doc?: string
+}
+
+/**
+ * Module definition.
+ */
+export interface FlattenedModule extends WithId {
+  /** The name of the module. */
+  name: string
+  /** The definitions in the module. */
+  defs: FlattenedDef[]
   /** Optional documentation for the module. */
   doc?: string
 }
