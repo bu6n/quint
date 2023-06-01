@@ -252,7 +252,6 @@ export function compileFromCode(
         parseData => {
           const { modules, table, sourceMap } = parseData
 
-          // TODO: handle errors
           const [analysisErrors, analysisOutput] = analyzeModules(table, modules)
 
           const { flattenedModules, flattenedTable, flattenedAnalysis } = flattenModules(
